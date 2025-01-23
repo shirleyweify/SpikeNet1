@@ -1,23 +1,16 @@
 import numpy as np
-import mne
 import os
 import os.path as osp
 import pandas as pd
 import math
-
-# # sample code
-# filesub = 'DA402AQB'
-# path = '/Users/fjiang1/Documents/eegdata/'
-# filename = path + filesub + '.m00'
-# f = open(filename, "r")
-# txt = f.readlines()[0]
-# data = np.loadtxt(filename, skiprows=2)
-# sfreq = 1000 / float(txt.split(' ')[3].split('=')[1])
-# fixed_chnames = ['Fp1', 'Fp2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2', 'F7', 'F8', 'T3', 'T4', 'T5', 'T6', 'Fz',
-#                  'Cz', 'Pz']
-# info = mne.create_info(fixed_chnames, sfreq=sfreq)
-# rawdata = mne.io.RawArray(data[:, :19].transpose(), info)
-# mne.export.export_raw(path + filesub + '.edf', rawdata)
+from mne.filter import notch_filter, filter_data
+from keras.models import model_from_json
+from sklearn.metrics import f1_score
+from sklearn.metrics import precision_score
+from sklearn.metrics import recall_score
+from sklearn.metrics import average_precision_score
+from sklearn.metrics import roc_auc_score
+from imblearn.metrics import specificity_score
 
 # settings
 path = '/Users/shirleywei/Dropbox/Data/Spike'
@@ -28,159 +21,177 @@ test_model = 'tuev'  # 'meg' or 'tuev'
 calcu_ratio = False
 chavg = False
 
-if calcu_ratio:
-    # calculate 1/0 ratio of MEG data
-    if test_model == 'meg':
-        filedir = osp.join(path, 'dsig140meg_128')
-    elif test_model == 'tuev':
-        filedir = '/Users/shirleywei/Dropbox/Data/Spike/tuev22eeg500_v2.0.0/train'
-    else:
-        raise Exception("No correct test model specified.")
-    counter_all, counter_spike = 0, 0
-    for f in os.listdir(filedir):
-        X = np.load(osp.join(filedir, f))
-        tar = X['target'][0]
-        if tar == 1:
-            counter_spike += 1
-        counter_all += 1
-    ratio = counter_spike / counter_all
-    print("1/0 ratio for data: " + str(ratio))
+# global var
+notch_freq = 60
+bp_freq = [0.5, None]
+org_channels = ['FP1', 'FP2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2', 'F7', 'F8', 'T3', 'T4', 'T5', 'T6', 'FZ',
+                'CZ', 'PZ']
+mono_channels = ['FP1', 'F3', 'C3', 'P3', 'F7', 'T3', 'T5', 'O1', 'FZ', 'CZ', 'PZ', 'FP2', 'F4', 'C4', 'P4', 'F8', 'T4',
+                 'T6', 'O2']
+bipolar_channels = ['FP1-F7', 'F7-T3', 'T3-T5', 'T5-O1', 'FP2-F8', 'F8-T4', 'T4-T6', 'T6-O2', 'FP1-F3', 'F3-C3',
+                    'C3-P3', 'P3-O1', 'FP2-F4', 'F4-C4', 'C4-P4', 'P4-O2', 'FZ-CZ', 'CZ-PZ']
+Fs = 128
+L = int(round(1 * Fs))
+step = 1
+batch_size = 1000
 
-else:
-    # parameters
-    if test_model == 'meg':
-        downrate = 256
-        nX = 64
-        nZ = 32
-        ratio = 0.37455223679603544  # 1/0 ratio according to MEG data
-    elif test_model == 'tuev':
-        downrate = 250
-        nX = 250
-        nZ = 125
-        ratio = 0.47083820248592373
-    else:
-        raise Exception("No correct test model specified.")
-    # -----------------
-    nT = nX + nZ * 2
-    nt = int(nT / 2)  # half length
-    sampleID = 0
-    samplespike = 0
-    samplenormal = 0
-    nrows = []
 
-    # read seizure and spike file names
-    # seizure
-    seifile = pd.read_excel(osp.join(path, 'newEEGdata_tb', 'seionset.xlsx'))
-    seifile = seifile.dropna()
-    seifilesub = seifile['file'].unique()
-    # spikes
-    spikefile = pd.read_excel(osp.join(path, 'newEEGdata_tb', 'feirevised_filter.xlsx'), header=1)
-    interictal_filesub = spikefile['interictal_file'].dropna().unique()
-    ictal_filesub = spikefile['ictal_file'].dropna().unique()
-    abfilesub = np.array(list(set(interictal_filesub.tolist() + ictal_filesub.tolist() + seifilesub.tolist())))
-    normalfilesub = [f for f in filesubs if f not in abfilesub]
+def read_m00_file(path):
+    # read data
 
-    # create spike file dict
-    filedict = dict()  # 'filesub': [time1, time2, ...] (seconds) if time is empty then normal subs
-    spikefile = spikefile[spikefile['comments'].isna()]  # remove red rows (not sure)
-    spikefilesub = spikefile['interictal_file'].dropna().unique().tolist()
-    numspikefile = 0
-    for f in spikefilesub:
-        pd = spikefile[spikefile['interictal_file'] == f]
-        extime = pd['exact_time'].unique().tolist()
-        sec = [t.minute * 60 + t.second + t.microsecond / 1e6 for t in extime]  # convert to seconds
-        filedict[f] = sec
-        numspikefile += len(sec)
-    for f in normalfilesub:
-        filedict[f] = list()
+    f = open(path, "r")
+    txt = f.readlines()[0]
+    data = np.loadtxt(path, skiprows=2)
 
-    # spike files and normal ones
-    randn = math.ceil((numspikefile * ((1 - ratio) / ratio)) / len(normalfilesub))
+    seg = data[:, :19].transpose()
+    data = np.where(np.isnan(seg), 0, seg)
 
-    # channels and montages
-    fixed_chnames = ['Fp1', 'Fp2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2', 'F7', 'F8', 'T3', 'T4', 'T5', 'T6',
-                     'Fz', 'Cz', 'Pz']
-    # channel_anode = [
-    #     'Fp1', 'F7', 'T3', 'T5',
-    #     'Fp2', 'F8', 'T4', 'T6',
-    #     'T3', 'C3', 'Cz', 'C4',
-    #     'Fp1', 'F3', 'C3', 'P3',
-    #     'Fp2', 'F4', 'C4', 'P4'
-    # ]
-    # channel_cathode = [
-    #     'F7', 'T3', 'T5', 'O1',
-    #     'F8', 'T4', 'T6', 'O2',
-    #     'C3', 'Cz', 'C4', 'T4',
-    #     'F3', 'C3', 'P3', 'O1',
-    #     'F4', 'C4', 'P4', 'O2'
-    # ]
-    # new_channel_names = [
-    #     'Fp1-F7', 'F7-T3', 'T3-T5', 'T5-O1',
-    #     'Fp2-F8', 'F8-T4', 'T4-T6', 'T6-O2',
-    #     'T3-C3', 'C3-Cz', 'Cz-C4', 'C4-T4',
-    #     'Fp1-F3', 'F3-C3', 'C3-P3', 'P3-O1',
-    #     'Fp2-F4', 'F4-C4', 'C4-P4', 'P4-O2'
-    # ]
+    # switch rows
+    switch_idx = [org_channels.index(mono_channels[i]) for i in range(19)]
+    data = data[switch_idx, :]
 
-    # Read tiantan data .m00
-    foldername = 'newEEGdata_resample' + str(downrate) + 'Hz'
-    if chavg:
-        foldername = foldername + '_chavg'
-    for filesub in filedict.keys():
-        filename = osp.join(path, 'newEEGdata', filesub + '.m00')
-        if osp.exists(filename):
-            f = open(filename, "r")
-            txt = f.readlines()[0]
-            data = np.loadtxt(filename, skiprows=2)
-            nrows.append(data.shape[1])
-            if data.shape[1] < 19:
-                continue
-            sfreq = 1000 / float(txt.split(' ')[3].split('=')[1])
-            info = mne.create_info(fixed_chnames, sfreq=sfreq)
-            rawdata = mne.io.RawArray(data[:, :19].transpose(), info)
-            # preprocessing
-            nd_data = rawdata.copy().get_data()
-            nd_data = -nd_data
-            nd_data = mne.filter.resample(nd_data, up=1, down=sfreq / downrate)  # resample
-            nd_data = mne.filter.filter_data(nd_data, sfreq=sfreq, l_freq=1, h_freq=45)  # do not need to * 1e7
-            if chavg:
-                nd_data = nd_data - nd_data.mean(0)[np.newaxis, :]  # channel avg
-            nd_data = mne.epochs.detrend(nd_data)
-            # ---------------------------------------
-            times = np.array(filedict[filesub])
-            counter = 0
-            msm = nd_data.shape[1]  # total number of measurements
-            if len(times) != 0:  # spike time, unit: second(s)
-                pos = np.round(times * downrate)
-                target = np.array([1])
-            else:  # normal, randomly pick pos to crop
-                pos = np.random.choice(range(nt, msm, nT), size=randn, replace=False)
-                target = np.array([0])
-            for p in pos:
-                p = round(p)
-                subeeg = nd_data[:, (p - nt): (p + nt)]
-                time = p / downrate
-                # if len(str(counter)) == 1:
-                #     num = '0' + str(counter)
-                # else:
-                #     num = str(counter)
-                # np.savez(osp.join(path, 'newEEGdata_resample', filesub + str(counter) + '.npz'),
-                #          eeg=subeeg, target=target, time=time)
-                np.savez(osp.join(path, foldername, str(sampleID) + '.npz'),
-                         eeg=subeeg, target=target, time=time)
-                sampleID += 1
-                counter += 1
-                if target[0] == 1:
-                    samplespike += 1
-                else:
-                    samplenormal += 1
-                if (samplespike / sampleID) < ratio:
-                    break
+    # montages
+    bipolar_ids = np.array(
+        [[mono_channels.index(bc.split('-')[0]), mono_channels.index(bc.split('-')[1])] for bc in bipolar_channels])
+    bipolar_data = data[bipolar_ids[:, 0]] - data[bipolar_ids[:, 1]]
+    average_data = data - data.mean(axis=0)
+    res = np.concatenate([average_data, bipolar_data], axis=0)
+
+    return res
+
+
+def preprocess_eeg(X):
+    # Notch and highpass
+    X = filter_data(X, Fs, bp_freq[0], bp_freq[1], n_jobs=-1, method='fir', verbose=False)
+    X = notch_filter(X, Fs, notch_freq, n_jobs=-1, method='fir', verbose=False)
+
+    return X
+
+
+# parameters
+downrate = 256
+nX = 64
+nZ = 32
+ratio = 0.37455223679603544  # 1/0 ratio according to MEG data
+
+# -----------------
+nT = nX + nZ * 2
+nt = int(nT / 2)  # half length
+sampleID = 0
+samplespike = 0
+samplenormal = 0
+nrows = []
+
+# read seizure and spike file names
+# seizure
+seifile = pd.read_excel(osp.join(path, 'newEEGdata_tb', 'seionset.xlsx'))
+seifile = seifile.dropna()
+seifilesub = seifile['file'].unique()
+# spikes
+spikefile = pd.read_excel(osp.join(path, 'newEEGdata_tb', 'feirevised_filter.xlsx'), header=1)
+interictal_filesub = spikefile['interictal_file'].dropna().unique()
+ictal_filesub = spikefile['ictal_file'].dropna().unique()
+abfilesub = np.array(list(set(interictal_filesub.tolist() + ictal_filesub.tolist() + seifilesub.tolist())))
+normalfilesub = [f for f in filesubs if f not in abfilesub]
+
+# create spike file dict
+filedict = dict()  # 'filesub': [time1, time2, ...] (seconds) if time is empty then normal subs
+spikefile = spikefile[spikefile['comments'].isna()]  # remove red rows (not sure)
+spikefilesub = spikefile['interictal_file'].dropna().unique().tolist()
+numspikefile = 0
+for f in spikefilesub:
+    pd = spikefile[spikefile['interictal_file'] == f]
+    extime = pd['exact_time'].unique().tolist()
+    sec = [t.minute * 60 + t.second + t.microsecond / 1e6 for t in extime]  # convert to seconds
+    filedict[f] = sec
+    numspikefile += len(sec)
+for f in normalfilesub:
+    filedict[f] = list()
+
+# spike files and normal ones
+randn = math.ceil((numspikefile * ((1 - ratio) / ratio)) / len(normalfilesub))
+
+# ==============================================
+
+# I/O directories
+targetDir = "Output/"
+if not os.path.exists(targetDir):
+    os.makedirs(targetDir)
+
+# load model
+with open("model/spikenet1.o_structure.txt", "r") as ff:
+    json_string = ff.read()
+
+model = model_from_json(json_string)
+model.load_weights("model/spikenet1.o_weights.h5")
+
+# initialization
+y, yp = [], []
+X = np.array([]).reshape(0, 128, 37)
+
+# ==============================================
+for filesub in filedict.keys():
+    filename = osp.join(path, 'newEEGdata', filesub + '.m00')
+    if osp.exists(filename):
+        # read X
+        data = read_m00_file(filename)
+        eeg = preprocess_eeg(data)
+
+        # ---------------------------------------
+        # read y
+        times = np.array(filedict[filesub])
+        msm = eeg.shape[1]  # total number of measurements
+        if len(times) != 0:  # spike time, unit: second(s)
+            pos = np.round(times * downrate)
+            target = np.array([1])
+        else:  # normal, randomly pick pos to crop
+            pos = np.random.choice(range(nt, msm, nT), size=randn, replace=False)
+            target = np.array([0])
+        for p in pos:
+            p = round(p)
+            subeeg = eeg[:, (p - nt): (p + nt)]
+            # aggregate data
+            res = np.expand_dims(subeeg.transpose(), axis=0)
+            X = np.concatenate((X, res), axis=0)
+            y.extend(target)
+            # ========================
+            sampleID += 1
+            if target[0] == 1:
+                samplespike += 1
+            else:
+                samplenormal += 1
             if (samplespike / sampleID) < ratio:
                 break
+        if (samplespike / sampleID) < ratio:
+            break
 
-    print("Number of samples: " + str(sampleID))
-    print("Number of spikes: " + str(samplespike))
-    print("Number of normal: " + str(samplenormal))
-    print("1/0 ratio generated: " + str(samplespike / sampleID))
-    print(nrows)
+print(X.shape)
+x = np.split(X, np.arange(batch_size, sampleID + 1, batch_size))
+for i in range(len(x)):
+    X = np.expand_dims(x[i], axis=2)
+    yp.extend(model.predict(X).flatten())
+
+y = np.array(y)
+yp = np.array(yp)
+print(y), print(yp)
+
+yb = (yp > 0.1).astype(float)  # threshold
+recall = recall_score(y, yb, average='binary')  # recall = TP / (TP + FN), find completely
+prec = precision_score(y, yb, average='binary')  # precision = TP / (TP + FP), find accurately
+spec = specificity_score(y, yb, average='binary')
+f1 = f1_score(y, yb, average='binary')  # f1 score = 2 * precision * recall / (precision + recall)
+prauc = average_precision_score(y, yp)
+auc = roc_auc_score(y, yp)
+oos = {'recall': round(recall, 4),
+       'prec': round(prec, 4),
+       'spec': round(spec, 4),
+       'f1': round(f1, 4),
+       'prauc': round(prauc, 4),
+       'auc': round(auc, 4)}
+oos_ = pd.DataFrame(oos, index=[0])
+print(oos_)
+
+# export
+output_path = targetDir + "SSD_btheeg"
+np.save(output_path, yp)
+
