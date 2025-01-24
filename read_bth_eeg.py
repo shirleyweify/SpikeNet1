@@ -13,7 +13,7 @@ from sklearn.metrics import roc_auc_score
 from imblearn.metrics import specificity_score
 
 # settings
-path = '/Users/shirleywei/Dropbox/Data/Spike'
+path = osp.join('C:', osp.sep, 'Users', 'FBE', 'Dropbox', 'Data', 'Spike')
 files = os.listdir(osp.join(path, 'newEEGdata'))
 filesubs = [f[:-4] for f in files]
 
