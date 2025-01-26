@@ -1,64 +1,61 @@
-import os
-
-import mne.io
 import numpy as np
-import scipy.io as sio
-import hdf5storage as hs
-from tqdm import tqdm
+import os
+import os.path as osp
+import pandas as pd
+import math
 from mne.filter import notch_filter, filter_data
 from keras.models import model_from_json
+from sklearn.metrics import f1_score
+from sklearn.metrics import precision_score
+from sklearn.metrics import recall_score
+from sklearn.metrics import average_precision_score
+from sklearn.metrics import roc_auc_score
+from imblearn.metrics import specificity_score
+
+# settings
+# path = osp.join('C:', osp.sep, 'Users', 'FBE', 'Dropbox', 'Data', 'Spike')
+path = osp.join(osp.sep, 'Users', 'shirleywei', 'Dropbox', 'Data', 'Spike')
+files = os.listdir(osp.join(path, 'newEEGdata'))
+filesubs = [f[:-4] for f in files]
+
+test_model = 'tuev'  # 'meg' or 'tuev'
+calcu_ratio = False
+chavg = False
 
 # global var
 notch_freq = 60
 bp_freq = [0.5, None]
-# mono_channels = ['FP1', 'F3', 'C3', 'P3', 'F7', 'T3', 'T5', 'O1', 'FZ', 'CZ', 'PZ', 'FP2', 'F4', 'C4', 'P4', 'F8', 'T4',
-#                  'T6', 'O2']
-# bipolar_channels = ['FP1-F7', 'F7-T3', 'T3-T5', 'T5-O1', 'FP2-F8', 'F8-T4', 'T4-T6', 'T6-O2', 'FP1-F3', 'F3-C3',
-#                     'C3-P3', 'P3-O1', 'FP2-F4', 'F4-C4', 'C4-P4', 'P4-O2', 'FZ-CZ', 'CZ-PZ']
-mono_channels = ['Fp1', 'Fp2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2', 'F7', 'F8', 'T3', 'T4', 'T5', 'T6', 'Fz',
-                 'Cz', 'Pz']
-bipolar_channels = ['Fp1-F7', 'F7-T3', 'T3-T5', 'T5-O1', 'Fp2-F8', 'F8-T4', 'T4-T6', 'T6-O2', 'Fp1-F3', 'F3-C3',
-                    'C3-P3', 'P3-O1', 'Fp2-F4', 'F4-C4', 'C4-P4', 'P4-O2', 'Fz-Cz', 'Cz-Pz']
+org_channels = ['FP1', 'FP2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2', 'F7', 'F8', 'T3', 'T4', 'T5', 'T6', 'FZ',
+                'CZ', 'PZ']
+mono_channels = ['FP1', 'F3', 'C3', 'P3', 'F7', 'T3', 'T5', 'O1', 'FZ', 'CZ', 'PZ', 'FP2', 'F4', 'C4', 'P4', 'F8', 'T4',
+                 'T6', 'O2']
+bipolar_channels = ['FP1-F7', 'F7-T3', 'T3-T5', 'T5-O1', 'FP2-F8', 'F8-T4', 'T4-T6', 'T6-O2', 'FP1-F3', 'F3-C3',
+                    'C3-P3', 'P3-O1', 'FP2-F4', 'F4-C4', 'C4-P4', 'P4-O2', 'FZ-CZ', 'CZ-PZ']
 Fs = 128
 L = int(round(1 * Fs))
 step = 1
 batch_size = 1000
 
 
-def read_mat_file(path):
+def read_m00_file(path):
     # read data
-    try:
-        res = hs.loadmat(path)
-    except Exception as ee:
-        res = sio.loadmat(path)
 
-    seg = res['data'][0:19, :]
-    res['data'] = np.where(np.isnan(seg), 0, seg)
-
-    # montages
-    bipolar_ids = np.array(
-        [[mono_channels.index(bc.split('-')[0]), mono_channels.index(bc.split('-')[1])] for bc in bipolar_channels])
-    bipolar_data = res['data'][bipolar_ids[:, 0]] - res['data'][bipolar_ids[:, 1]]
-    average_data = res['data'] - res['data'].mean(axis=0);
-    res['data'] = np.concatenate([average_data, bipolar_data], axis=0)
-
-    return res
-
-def read_raw_file(path):
-    # read data
     f = open(path, "r")
     txt = f.readlines()[0]
-    res = np.loadtxt(path, skiprows=2)
-    res = res.transpose()
+    data = np.loadtxt(path, skiprows=2)
 
-    seg = res[0:19, :]
-    res = np.where(np.isnan(seg), 0, seg)
+    seg = data[:, :19].transpose()
+    data = np.where(np.isnan(seg), 0, seg)
+
+    # switch rows
+    switch_idx = [org_channels.index(mono_channels[i]) for i in range(19)]
+    data = data[switch_idx, :]
 
     # montages
     bipolar_ids = np.array(
         [[mono_channels.index(bc.split('-')[0]), mono_channels.index(bc.split('-')[1])] for bc in bipolar_channels])
-    bipolar_data = res[bipolar_ids[:, 0]] - res[bipolar_ids[:, 1]]
-    average_data = res - res.mean(axis=0)
+    bipolar_data = data[bipolar_ids[:, 0]] - data[bipolar_ids[:, 1]]
+    average_data = data - data.mean(axis=0)
     res = np.concatenate([average_data, bipolar_data], axis=0)
 
     return res
@@ -72,48 +69,129 @@ def preprocess_eeg(X):
     return X
 
 
-if __name__ == '__main__':
+# parameters
+downrate = 256
+nX = 64
+nZ = 32
+ratio = 0.37455223679603544  # 1/0 ratio according to MEG data
 
-    # I/O directories
-    sourceDir = "/Users/shirleywei/Dropbox/Data/Spike/newEEGdata/"
-    targetDir = "/Users/shirleywei/Dropbox/Data/Spike/newEEGdata_jama/"
-    if not os.path.exists(targetDir):
-        os.makedirs(targetDir)
-    files = os.listdir(sourceDir)
+# -----------------
+nT = nX + nZ * 2
+nt = int(nT / 2)  # half length
+sampleID = 0
+samplespike = 0
+samplenormal = 0
+nrows = []
 
-    # load model 
-    with open("model/spikenet1.o_structure.txt", "r") as ff:
-        json_string = ff.read()
+# read seizure and spike file names
+# seizure
+seifile = pd.read_excel(osp.join(path, 'newEEGdata_tb', 'seionset.xlsx'))
+seifile = seifile.dropna()
+seifilesub = seifile['file'].unique()
+# spikes
+spikefile = pd.read_excel(osp.join(path, 'newEEGdata_tb', 'feirevised_filter.xlsx'), header=1)
+interictal_filesub = spikefile['interictal_file'].dropna().unique()
+ictal_filesub = spikefile['ictal_file'].dropna().unique()
+abfilesub = np.array(list(set(interictal_filesub.tolist() + ictal_filesub.tolist() + seifilesub.tolist())))
+normalfilesub = [f for f in filesubs if f not in abfilesub]
 
-    model = model_from_json(json_string)
-    model.load_weights("model/spikenet1.o_weights.h5")
+# create spike file dict
+filedict = dict()  # 'filesub': [time1, time2, ...] (seconds) if time is empty then normal subs
+spikefile = spikefile[spikefile['comments'].isna()]  # remove red rows (not sure)
+spikefilesub = spikefile['interictal_file'].dropna().unique().tolist()
+numspikefile = 0
+for f in spikefilesub:
+    pd = spikefile[spikefile['interictal_file'] == f]
+    extime = pd['exact_time'].unique().tolist()
+    sec = [t.minute * 60 + t.second + t.microsecond / 1e6 for t in extime]  # convert to seconds
+    filedict[f] = sec
+    numspikefile += len(sec)
+for f in normalfilesub:
+    filedict[f] = list()
 
-    for fn in files[:1]:
-        print("--scan " + fn)
+# spike files and normal ones
+randn = math.ceil((numspikefile * ((1 - ratio) / ratio)) / len(normalfilesub))
 
-        # read data
-        input_path = sourceDir + fn
-        data = read_raw_file(input_path)
+# ==============================================
 
-        # preprocess            
+# I/O directories
+targetDir = "Output/"
+if not os.path.exists(targetDir):
+    os.makedirs(targetDir)
+
+# load model
+with open("model/spikenet1.o_structure.txt", "r") as ff:
+    json_string = ff.read()
+
+model = model_from_json(json_string)
+model.load_weights("model/spikenet1.o_weights.h5")
+
+# initialization
+y, yp = [], []
+X = np.array([]).reshape(0, 128, 37)
+
+# ==============================================
+for filesub in filedict.keys():
+    filename = osp.join(path, 'newEEGdata', filesub + '.m00')
+    if osp.exists(filename):
+        # read X
+        data = read_m00_file(filename)
         eeg = preprocess_eeg(data)
 
-        # run model
-        start_ids = np.arange(0, eeg.shape[1] - L + 1, step)
-        start_ids = np.array_split(start_ids, int(np.ceil(len(start_ids) * 1. / batch_size)))
-        yp = []
-        for startid in tqdm(start_ids, leave=False):
-            X = eeg[:, list(map(lambda x: np.arange(x, x + L), startid))].transpose(1, 2, 0)
-            X = np.expand_dims(X, axis=2)
-            yp.extend(model.predict(X).flatten())
+        # ---------------------------------------
+        # read y
+        times = np.array(filedict[filesub])
+        msm = eeg.shape[1]  # total number of measurements
+        if len(times) != 0:  # spike time, unit: second(s)
+            pos = np.round(times * downrate)
+            target = np.array([1])
+        else:  # normal, randomly pick pos to crop
+            pos = np.random.choice(range(nt, msm, nT), size=randn, replace=False)
+            target = np.array([0])
+        for p in pos:
+            p = round(p)
+            subeeg = eeg[:, (p - nt): (p + nt)]
+            # aggregate data
+            res = np.expand_dims(subeeg.transpose(), axis=0)
+            X = np.concatenate((X, res), axis=0)
+            y.extend(target)
+            # ========================
+            sampleID += 1
+            if target[0] == 1:
+                samplespike += 1
+            else:
+                samplenormal += 1
+            if (samplespike / sampleID) < ratio:
+                break
+        if (samplespike / sampleID) < ratio:
+            break
 
-        yp = np.array(yp)
-        padleft = (eeg.shape[1] - len(yp) * step) // 2
-        padright = eeg.shape[1] - len(yp) * step - padleft
-        yp = np.r_[np.zeros(padleft) + yp[0], np.repeat(yp, step, axis=0), np.zeros(padright) + yp[-1]]
-        print(yp)
+print(X.shape)
+x = np.split(X, np.arange(batch_size, sampleID + 1, batch_size))
+for i in range(len(x)):
+    X = np.expand_dims(x[i], axis=2)
+    yp.extend(model.predict(X).flatten())
 
-        # export
-        output_path = targetDir + "SSD_" + fn
-        # np.save(output_path, yp)
-        # sio.savemat(output_path, {'yp': yp})
+y = np.array(y)
+yp = np.array(yp)
+print(y), print(yp)
+
+yb = (yp > 0.1).astype(float)  # threshold
+recall = recall_score(y, yb, average='binary')  # recall = TP / (TP + FN), find completely
+prec = precision_score(y, yb, average='binary')  # precision = TP / (TP + FP), find accurately
+spec = specificity_score(y, yb, average='binary')
+f1 = f1_score(y, yb, average='binary')  # f1 score = 2 * precision * recall / (precision + recall)
+prauc = average_precision_score(y, yp)
+auc = roc_auc_score(y, yp)
+oos = {'recall': round(recall, 4),
+       'prec': round(prec, 4),
+       'spec': round(spec, 4),
+       'f1': round(f1, 4),
+       'prauc': round(prauc, 4),
+       'auc': round(auc, 4)}
+print(oos)
+
+# export
+output_path = targetDir + "SSD_btheeg"
+np.savez(output_path, y=y, yp=yp)
+
