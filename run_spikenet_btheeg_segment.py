@@ -19,14 +19,12 @@ from imblearn.metrics import specificity_score
 # global var
 notch_freq = 60
 bp_freq = [0.5, None]
-# mono_channels = ['FP1', 'F3', 'C3', 'P3', 'F7', 'T3', 'T5', 'O1', 'FZ', 'CZ', 'PZ', 'FP2', 'F4', 'C4', 'P4', 'F8', 'T4',
-#                  'T6', 'O2']
-# bipolar_channels = ['FP1-F7', 'F7-T3', 'T3-T5', 'T5-O1', 'FP2-F8', 'F8-T4', 'T4-T6', 'T6-O2', 'FP1-F3', 'F3-C3',
-#                     'C3-P3', 'P3-O1', 'FP2-F4', 'F4-C4', 'C4-P4', 'P4-O2', 'FZ-CZ', 'CZ-PZ']
-mono_channels = ['Fp1', 'Fp2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2', 'F7', 'F8', 'T3', 'T4', 'T5', 'T6', 'Fz',
-                 'Cz', 'Pz']
-bipolar_channels = ['Fp1-F7', 'F7-T3', 'T3-T5', 'T5-O1', 'Fp2-F8', 'F8-T4', 'T4-T6', 'T6-O2', 'Fp1-F3', 'F3-C3',
-                    'C3-P3', 'P3-O1', 'Fp2-F4', 'F4-C4', 'C4-P4', 'P4-O2', 'Fz-Cz', 'Cz-Pz']
+org_channels = ['FP1', 'FP2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2', 'F7', 'F8', 'T3', 'T4', 'T5', 'T6', 'FZ',
+                'CZ', 'PZ']
+mono_channels = ['FP1', 'F3', 'C3', 'P3', 'F7', 'T3', 'T5', 'O1', 'FZ', 'CZ', 'PZ', 'FP2', 'F4', 'C4', 'P4', 'F8', 'T4',
+                 'T6', 'O2']
+bipolar_channels = ['FP1-F7', 'F7-T3', 'T3-T5', 'T5-O1', 'FP2-F8', 'F8-T4', 'T4-T6', 'T6-O2', 'FP1-F3', 'F3-C3',
+                    'C3-P3', 'P3-O1', 'FP2-F4', 'F4-C4', 'C4-P4', 'P4-O2', 'FZ-CZ', 'CZ-PZ']
 Fs = 128
 L = int(round(1 * Fs))
 step = 1
@@ -49,25 +47,6 @@ def read_mat_file(path):
     bipolar_data = res['data'][bipolar_ids[:, 0]] - res['data'][bipolar_ids[:, 1]]
     average_data = res['data'] - res['data'].mean(axis=0);
     res['data'] = np.concatenate([average_data, bipolar_data], axis=0)
-
-    return res
-
-def read_raw_file(path):
-    # read data
-    f = open(path, "r")
-    txt = f.readlines()[0]
-    res = np.loadtxt(path, skiprows=2)
-    res = res.transpose()
-
-    seg = res[0:19, :]
-    res = np.where(np.isnan(seg), 0, seg)
-
-    # montages
-    bipolar_ids = np.array(
-        [[mono_channels.index(bc.split('-')[0]), mono_channels.index(bc.split('-')[1])] for bc in bipolar_channels])
-    bipolar_data = res[bipolar_ids[:, 0]] - res[bipolar_ids[:, 1]]
-    average_data = res - res.mean(axis=0)
-    res = np.concatenate([average_data, bipolar_data], axis=0)
 
     return res
 
@@ -108,6 +87,10 @@ if __name__ == '__main__':
         eeg = data['eeg']
         y.extend(data['target'])
 
+        # switch rows
+        switch_idx = [org_channels.index(mono_channels[i]) for i in range(19)]
+        eeg = eeg[switch_idx, :]
+
         # montages
         bipolar_ids = np.array(
             [[mono_channels.index(bc.split('-')[0]), mono_channels.index(bc.split('-')[1])] for bc in bipolar_channels])
@@ -120,7 +103,7 @@ if __name__ == '__main__':
         X = np.concatenate((X, res), axis=0)
 
     print(X.shape)
-    x = np.split(X, np.arange(batch_size, len(files)+1, batch_size))
+    x = np.split(X, np.arange(batch_size, len(files) + 1, batch_size))
     for i in range(len(x)):
         X = np.expand_dims(x[i], axis=2)
         yp.extend(model.predict(X).flatten())
@@ -142,9 +125,8 @@ if __name__ == '__main__':
            'f1': round(f1, 4),
            'prauc': round(prauc, 4),
            'auc': round(auc, 4)}
-    oos_ = pd.DataFrame(oos, index=[0])
-    print(oos_)
+    print(oos)
 
     # export
     output_path = targetDir + "SSD_btheeg_segment"
-    np.save(output_path, yp)
+    np.savez(output_path, y=y, yp=yp)
