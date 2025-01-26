@@ -3,7 +3,7 @@ import os
 import os.path as osp
 import pandas as pd
 import math
-from mne.filter import notch_filter, filter_data
+from mne.filter import notch_filter, filter_data, resample
 from keras.models import model_from_json
 from sklearn.metrics import f1_score
 from sklearn.metrics import precision_score
@@ -13,6 +13,8 @@ from sklearn.metrics import roc_auc_score
 from imblearn.metrics import specificity_score
 
 # settings
+np.random.seed(1)
+
 # path = osp.join('C:', osp.sep, 'Users', 'FBE', 'Dropbox', 'Data', 'Spike')
 path = osp.join(osp.sep, 'Users', 'shirleywei', 'Dropbox', 'Data', 'Spike')
 files = os.listdir(osp.join(path, 'newEEGdata'))
@@ -39,13 +41,15 @@ batch_size = 1000
 
 def read_m00_file(path):
     # read data
-
     f = open(path, "r")
     txt = f.readlines()[0]
     data = np.loadtxt(path, skiprows=2)
+    sfreq = 1000 / float(txt.split(' ')[3].split('=')[1])
+    downrate = Fs
 
     seg = data[:, :19].transpose()
     data = np.where(np.isnan(seg), 0, seg)
+    data = - data
 
     # switch rows
     switch_idx = [org_channels.index(mono_channels[i]) for i in range(19)]
@@ -57,6 +61,9 @@ def read_m00_file(path):
     bipolar_data = data[bipolar_ids[:, 0]] - data[bipolar_ids[:, 1]]
     average_data = data - data.mean(axis=0)
     res = np.concatenate([average_data, bipolar_data], axis=0)
+
+    # downsample
+    res = resample(res, up=1, down=sfreq / downrate)
 
     return res
 
@@ -70,9 +77,9 @@ def preprocess_eeg(X):
 
 
 # parameters
-downrate = 256
-nX = 64
-nZ = 32
+downrate = Fs
+nX = 128
+nZ = 0
 ratio = 0.37455223679603544  # 1/0 ratio according to MEG data
 
 # -----------------
@@ -176,7 +183,7 @@ y = np.array(y)
 yp = np.array(yp)
 print(y), print(yp)
 
-yb = (yp > 0.1).astype(float)  # threshold
+yb = (yp > 0.25).astype(float)  # threshold
 recall = recall_score(y, yb, average='binary')  # recall = TP / (TP + FN), find completely
 prec = precision_score(y, yb, average='binary')  # precision = TP / (TP + FP), find accurately
 spec = specificity_score(y, yb, average='binary')
@@ -194,4 +201,3 @@ print(oos)
 # export
 output_path = targetDir + "SSD_btheeg"
 np.savez(output_path, y=y, yp=yp)
-
