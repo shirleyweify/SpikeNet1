@@ -12,8 +12,10 @@ from sklearn.metrics import average_precision_score
 from sklearn.metrics import roc_auc_score
 from imblearn.metrics import specificity_score
 
-# settings
-np.random.seed(1)
+seed_range = [1, 2]
+
+# # settings
+# np.random.seed(1)
 
 # path = osp.join('C:', osp.sep, 'Users', 'FBE', 'Dropbox', 'Data', 'Spike')
 path = osp.join(osp.sep, 'Users', 'shirleywei', 'Dropbox', 'Data', 'Spike')
@@ -133,71 +135,113 @@ with open("model/spikenet1.o_structure.txt", "r") as ff:
 model = model_from_json(json_string)
 model.load_weights("model/spikenet1.o_weights.h5")
 
-# initialization
-y, yp = [], []
-X = np.array([]).reshape(0, 128, 37)
 
-# ==============================================
-for filesub in filedict.keys():
-    filename = osp.join(path, 'newEEGdata', filesub + '.m00')
-    if osp.exists(filename):
-        # read X
-        data = read_m00_file(filename)
-        eeg = preprocess_eeg(data)
 
-        # ---------------------------------------
-        # read y
-        times = np.array(filedict[filesub])
-        msm = eeg.shape[1]  # total number of measurements
-        if len(times) != 0:  # spike time, unit: second(s)
-            pos = np.round(times * downrate)
-            target = np.array([1])
-        else:  # normal, randomly pick pos to crop
-            pos = np.random.choice(range(nt, msm, nT), size=randn, replace=False)
-            target = np.array([0])
-        for p in pos:
-            p = round(p)
-            subeeg = eeg[:, (p - nt): (p + nt)]
-            # aggregate data
-            res = np.expand_dims(subeeg.transpose(), axis=0)
-            X = np.concatenate((X, res), axis=0)
-            y.extend(target)
-            # ========================
-            sampleID += 1
-            if target[0] == 1:
-                samplespike += 1
-            else:
-                samplenormal += 1
+oos = {'recall': [],
+       'prec': [],
+       'spec': [],
+       'f1': [],
+       'prauc': [],
+       'auc': []}
+
+REC, PREC, SPEC, F1, PRAUC, AUC = [], [], [], [], [], []
+
+for seed in range(seed_range[0], seed_range[1] + 1):
+    np.random.seed(seed)
+
+    # initialization
+    y, yp = [], []
+    X = np.array([]).reshape(0, 128, 37)
+
+    # ==============================================
+    for filesub in filedict.keys():
+        filename = osp.join(path, 'newEEGdata', filesub + '.m00')
+        if osp.exists(filename):
+            # read X
+            data = read_m00_file(filename)
+            eeg = preprocess_eeg(data)
+
+            # ---------------------------------------
+            # read y
+            times = np.array(filedict[filesub])
+            msm = eeg.shape[1]  # total number of measurements
+            if len(times) != 0:  # spike time, unit: second(s)
+                pos = np.round(times * downrate)
+                target = np.array([1])
+            else:  # normal, randomly pick pos to crop
+                pos = np.random.choice(range(nt, msm, nT), size=randn, replace=False)
+                target = np.array([0])
+            for p in pos:
+                p = round(p)
+                subeeg = eeg[:, (p - nt): (p + nt)]
+                # aggregate data
+                res = np.expand_dims(subeeg.transpose(), axis=0)
+                X = np.concatenate((X, res), axis=0)
+                y.extend(target)
+                # ========================
+                sampleID += 1
+                if target[0] == 1:
+                    samplespike += 1
+                else:
+                    samplenormal += 1
+                if (samplespike / sampleID) < ratio:
+                    break
             if (samplespike / sampleID) < ratio:
                 break
-        if (samplespike / sampleID) < ratio:
-            break
 
-print(X.shape)
-x = np.split(X, np.arange(batch_size, sampleID + 1, batch_size))
-for i in range(len(x)):
-    X = np.expand_dims(x[i], axis=2)
-    yp.extend(model.predict(X).flatten())
+    print(X.shape)
+    x = np.split(X, np.arange(batch_size, sampleID + 1, batch_size))
+    for i in range(len(x)):
+        X = np.expand_dims(x[i], axis=2)
+        yp.extend(model.predict(X).flatten())
 
-y = np.array(y)
-yp = np.array(yp)
-print(y), print(yp)
+    y = np.array(y)
+    yp = np.array(yp)
+    # print(y), print(yp)
 
-yb = (yp > 0.25).astype(float)  # threshold
-recall = recall_score(y, yb, average='binary')  # recall = TP / (TP + FN), find completely
-prec = precision_score(y, yb, average='binary')  # precision = TP / (TP + FP), find accurately
-spec = specificity_score(y, yb, average='binary')
-f1 = f1_score(y, yb, average='binary')  # f1 score = 2 * precision * recall / (precision + recall)
-prauc = average_precision_score(y, yp)
-auc = roc_auc_score(y, yp)
-oos = {'recall': round(recall, 4),
-       'prec': round(prec, 4),
-       'spec': round(spec, 4),
-       'f1': round(f1, 4),
-       'prauc': round(prauc, 4),
-       'auc': round(auc, 4)}
-print(oos)
+    yb = (yp > 0.25).astype(float)  # threshold
+    recall = recall_score(y, yb, average='binary')  # recall = TP / (TP + FN), find completely
+    prec = precision_score(y, yb, average='binary')  # precision = TP / (TP + FP), find accurately
+    spec = specificity_score(y, yb, average='binary')
+    f1 = f1_score(y, yb, average='binary')  # f1 score = 2 * precision * recall / (precision + recall)
+    prauc = average_precision_score(y, yp)
+    auc = roc_auc_score(y, yp)
+    # oos = {'recall': round(recall, 4),
+    #        'prec': round(prec, 4),
+    #        'spec': round(spec, 4),
+    #        'f1': round(f1, 4),
+    #        'prauc': round(prauc, 4),
+    #        'auc': round(auc, 4)}
+    REC.append(round(recall, 4))
+    PREC.append(round(prec, 4))
+    SPEC.append(round(spec, 4))
+    F1.append(round(f1, 4))
+    PRAUC.append(round(prauc, 4))
+    AUC.append(round(auc, 4))
+    # print(oos)
 
-# export
-output_path = targetDir + "SSD_btheeg"
-np.savez(output_path, y=y, yp=yp)
+    # export
+    output_path = targetDir + "SSD_btheeg/SSD_btheeg_seed" + str(seed)
+    np.savez(output_path, y=y, yp=yp)
+
+# print(oos)
+# res = pd.DataFrame(oos)
+# res = pd.DataFrame(data={
+#     'recall': REC,
+#     'prec': PREC,
+#     'spec': SPEC,
+#     'f1': F1,
+#     'prauc': PRAUC,
+#     'auc': AUC
+# })
+# print(res)
+# res.to_csv(targetDir + "testTable_SSD_btheeg.csv")
+
+ar = np.array([REC, PREC, SPEC, F1, PRAUC, AUC])
+print(ar)
+np.savetxt(targetDir + "testTable_SSD_btheeg.csv", ar,
+           delimiter=",", header="Recall, Prec, Spec, F1, PRAUC, AUC")
+
+# # export
+# output_path = targetDir + "SSD_btheeg"
+# np.savez(output_path, y=y, yp=yp)
