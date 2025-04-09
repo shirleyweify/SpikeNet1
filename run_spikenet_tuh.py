@@ -20,7 +20,7 @@ dryrun = False  # if True, test on small samples
 
 # =======================================================
 # sys settings
-data_type = 'eval'  # 'train' or 'eval'
+data_type = 'train'  # 'train' or 'eval'
 
 np.random.seed(1)
 
@@ -31,7 +31,7 @@ if not os.path.exists(targetDir):
     os.makedirs(targetDir)
 
 # load path
-read_data_path = osp.join('/Volumes/WD1T/Spike/tuev_v2.0.0/edf', data_type)
+read_data_path = osp.join('/Users/shirleywei/Dropbox/Data/Spike/tuev_v2.0.0/edf', data_type)
 
 # subject_id = os.listdir(read_data_path)
 subject_id = [id for id in os.listdir((read_data_path)) if not id.startswith('.')]
@@ -57,6 +57,10 @@ Fs = 128
 L = int(round(1 * Fs))
 step = 1
 batch_size = 1000
+
+
+
+
 
 
 def read_edf_file(path):
@@ -96,6 +100,11 @@ def preprocess_eeg(X):
     return X
 
 
+
+
+
+
+
 # parameters
 downrate = Fs
 nX = 128  # = T
@@ -108,6 +117,9 @@ sampleID = 0
 y, yp = [], []
 X = np.array([]).reshape(0, 128, 37)
 
+time_start_end = np.array([]).reshape(0, 2)
+filename = []
+
 # ----------
 
 for subject in subject_id:  # subject = '00000021'
@@ -118,8 +130,13 @@ for subject in subject_id:  # subject = '00000021'
         # experiment = sub_experiment[9:]  # '00000001'
         edf_filepath = osp.join(subject_path, sub_experiment + '.edf')
         rec_filepath = osp.join(subject_path, sub_experiment + '.rec')
-        # read raw edf EEG data
-        data = read_edf_file(edf_filepath)
+        try:
+            # read raw edf EEG data
+            data = read_edf_file(edf_filepath)
+        except Exception as error:
+            print("An error occurred:", error)
+            continue  # force to start the next iteration
+
         eeg = preprocess_eeg(data)
 
         # read rec file
@@ -143,7 +160,9 @@ for subject in subject_id:  # subject = '00000021'
             nt_end = round(t_end * Fs)
             t0_start = nt_start - nZ
             t0_end = nt_end + nZ
-            if t0_start >= 0 and t0_end <= eeg.shape[1]:
+            ts_start = nt_start - int(Fs/2)  # leave .5 seconds left
+            ts_end = nt_end + int(Fs/2)  # leave .5 seconds right
+            if ts_start >= 0 and ts_end <= eeg.shape[1]:
                 subeeg = eeg[:, t0_start: t0_end]
                 cond_channel = np.where((rec_txt[:, 1] == t_start)
                                         & (rec_txt[:, 2] == t_end))
@@ -161,6 +180,11 @@ for subject in subject_id:  # subject = '00000021'
 
                 sampleID += 1
 
+                time_start_end_ = np.array([t_start, t_end]).reshape(1, 2)
+                time_start_end = np.concatenate((time_start_end, time_start_end_), axis=0)
+                filename.append(sub_experiment)
+
+
 # load model
 with open("model/spikenet1.o_structure.txt", "r") as ff:
     json_string = ff.read()
@@ -176,7 +200,9 @@ for i in range(len(x)):
 
 y = np.array(y)
 yp = np.array(yp)
+filename = np.array(filename)
 print(y), print(yp)
+print(y[1391]), print(yp[1391])
 
 yb = (yp > 0.5).astype(float)  # threshold
 recall = recall_score(y, yb, average='binary')  # recall = TP / (TP + FN), find completely
@@ -194,8 +220,8 @@ oos = {'recall': round(recall, 4),
 print(oos)
 
 # export
-output_path = targetDir + "SSD_tuh"
-np.savez(output_path, y=y, yp=yp)
+output_path = targetDir + "SSD_tuh_" + data_type
+np.savez(output_path, y=y, yp=yp, time=time_start_end, filename=filename)
 
 end = time.time()
 
