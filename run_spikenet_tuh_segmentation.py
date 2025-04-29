@@ -18,11 +18,7 @@ from spikePath import *
 
 start = time.time()
 
-dryrun = False  # if True, test on small samples
-
-# =======================================================
-# sys settings
-data_type = 'train'  # 'train' or 'eval'
+dryrun = True  # if True, test on small samples
 
 np.random.seed(1)
 
@@ -35,15 +31,15 @@ if not os.path.exists(targetDir):
 # =======================================================
 # sys settings
 
-os_sys = 'osx'  # 'osx' or 'win'
+os_sys = 'win'  # 'osx' or 'win'
 data_type = 'train'  # 'train' or 'eval'
-read_type = 'dropbox'  # 'wd', 'seagate' or 'dropbox'
+read_type = 'wd'  # 'wd', 'seagate' or 'dropbox'
 write_type = 'wd'  # 'wd', 'seagate' or 'dropbox'
 spike_type = 'IED'
 
 # Label type
 
-labeling = 'tuev22eeg500hf45spikenet'
+labeling = 'tuev41eeg500hf45spikenet'
 
 # =========================================================
 # path
@@ -87,12 +83,7 @@ sampleID = 0
 
 # ==============================================
 
-# initialization
-y, yp = [], []
-X = np.array([]).reshape(0, 128, 37)
-X_ = np.array([]).reshape(0, 500, 22)
-
-times = 3
+times = 10
 
 time_start_end = np.array([]).reshape(0, 2)
 filename = []
@@ -170,7 +161,7 @@ def preprocess_eeg(X):
 
 # =====================================================
 # load path
-read_data_path = osp.join('/Users/shirleywei/Dropbox/Data/Spike/tuev_v2.0.0/edf', data_type)
+# read_data_path = osp.join('/Users/shirleywei/Dropbox/Data/Spike/tuev_v2.0.0/edf', data_type)
 
 # subject_id = os.listdir(read_data_path)
 subject_id = [id for id in os.listdir((read_data_path)) if not id.startswith('.')]
@@ -192,7 +183,7 @@ for i in range(len(every10sub)):
 
     y, yp = [], []
     X = np.array([]).reshape(0, 128, 37)
-    X_ = np.array([]).reshape(0, 500, 22)
+    X_ = np.array([]).reshape(0, 500, 41)
     time_start_end = np.array([]).reshape(0, 2)
     filename = []
 
@@ -222,7 +213,10 @@ for i in range(len(every10sub)):
             # create montage
             order_anode = [raw_channels.index(ch) for ch in channel_anode]
             order_cathode = [raw_channels.index(ch) for ch in channel_cathode]
-            montage = data[order_anode] - data[order_cathode]
+            order_org = [raw_channels.index(ch) for ch in org_channels]
+            data_average = data[order_org] - data[order_org].mean(axis=0)
+            data_tcp22montage = data[order_anode] - data[order_cathode]
+            montage = np.concatenate((data_average, data_tcp22montage), axis=0)  # 19 + 22 = 41 channels
 
             # preprocess
             sfreq = rawdata.info['sfreq']
@@ -255,8 +249,8 @@ for i in range(len(every10sub)):
             # segment data
             for rec in range(rec_time.shape[0]):
                 for k in range(times):
-                    t_start = rec_time[rec, 0] + (k - (times + 1) / 2) * 2
-                    t_end = rec_time[rec, 1] + (k - (times + 1) / 2) * 2
+                    t_start = rec_time[rec, 0] + (k - (times + 1) / 2)
+                    t_end = rec_time[rec, 1] + (k - (times + 1) / 2)
                     nt_start = round(t_start * Fs)  # round to integer
                     nt_end = round(t_end * Fs)
                     t0_start = nt_start - nZ
