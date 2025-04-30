@@ -18,7 +18,7 @@ from spikePath import *
 
 start = time.time()
 
-dryrun = True  # if True, test on small samples
+dryrun = False  # if True, test on small samples
 
 np.random.seed(1)
 
@@ -31,8 +31,8 @@ if not os.path.exists(targetDir):
 # =======================================================
 # sys settings
 
-os_sys = 'win'  # 'osx' or 'win'
-data_type = 'train'  # 'train' or 'eval'
+os_sys = 'osx'  # 'osx' or 'win'
+data_type = 'eval'  # 'train' or 'eval'
 read_type = 'wd'  # 'wd', 'seagate' or 'dropbox'
 write_type = 'wd'  # 'wd', 'seagate' or 'dropbox'
 spike_type = 'IED'
@@ -80,6 +80,7 @@ downrate = Fs
 nX = 128  # = T
 nZ = 0  # = p / 2
 sampleID = 0
+subID = 0
 
 # ==============================================
 
@@ -172,37 +173,31 @@ if dryrun:
 
 # ----------
 
-tot_subjects = len(subject_id)
-every10sub = np.arange(0, tot_subjects, 10)
+for subject in subject_id:  # subject = '00000021'
+    try:
 
-for i in range(len(every10sub)):
-    if (i + 1) == len(every10sub):
-        sid = subject_id[every10sub[i]:]
-    else:
-        sid = subject_id[every10sub[i]:every10sub[i+1]]
-
-    y, yp = [], []
-    X = np.array([]).reshape(0, 128, 37)
-    X_ = np.array([]).reshape(0, 500, 41)
-    time_start_end = np.array([]).reshape(0, 2)
-    filename = []
-
-    for subject in sid:  # subject = '00000021'
         subject_path = osp.join(read_data_path, subject)
         subject_experiment_id = [ex[:-4] for ex in os.listdir(subject_path) if 'edf' in ex]  # ['00000021_00000001']
         spike_type_per_patient = np.array([])
+
+        y, yp = [], []
+        X = np.array([]).reshape(0, 128, 37)
+        X_ = np.array([]).reshape(0, 500, 41)
+        time_start_end = np.array([]).reshape(0, 2)
+        filename = []
+
+        print('--------------------')
+        print('Starting to read...')
+
         for sub_experiment in subject_experiment_id:  # sub_experiment = '00000021_00000001'
             # experiment = sub_experiment[9:]  # '00000001'
             edf_filepath = osp.join(subject_path, sub_experiment + '.edf')
             rec_filepath = osp.join(subject_path, sub_experiment + '.rec')
-            try:
-                # read raw edf EEG data
-                data = read_edf_file(edf_filepath)
-                # read raw edf EEG data ===================
-                rawdata = mne.io.read_raw_edf(edf_filepath)
-            except Exception as error:
-                print("An error occurred:", error)
-                continue  # force to start the next iteration
+
+            # read raw edf EEG data
+            data = read_edf_file(edf_filepath)
+            # read raw edf EEG data ===================
+            rawdata = mne.io.read_raw_edf(edf_filepath)
 
             eeg = preprocess_eeg(data)
 
@@ -232,114 +227,80 @@ for i in range(len(every10sub)):
             subeeg = mne.epochs.detrend(montage)  # detrend
 
             # ===========================================
+            nt = subeeg.shape[1]
+            ns = int(np.floor((nt - downrate_) / downrate_))
+            for s in range(ns):
+                t_start = s + 0.5  # seconds
+                t_end = s + 1.5  # seconds
+                # ---------- spikenet
+                nt_start = round(t_start * Fs)  # round to integer
+                nt_end = round(t_end * Fs)
+                t0_start = nt_start - nZ
+                t0_end = nt_end + nZ
+                # -------- ndl
+                nt_start = round(t_start * downrate_)  # round to integer
+                nt_end = round(t_end * downrate_)
+                t0_start_ = nt_start - nZ_
+                t0_end_ = nt_end + nZ_
+                # ------------
+                if t0_start_ >= 0 and t0_end_ <= eeg.shape[1]:
+                    eegseg = eeg[:, t0_start: t0_end]
+                    eegseg_ = subeeg[:, t0_start_: t0_end_]
+                    res = np.expand_dims(eegseg.transpose(), axis=0)
+                    res_ = np.expand_dims(eegseg_.transpose(), axis=0)
+                    X = np.concatenate((X, res), axis=0)
+                    X_ = np.concatenate((X_, res_), axis=0)
+                    # y.extend(target)
 
-            # read rec file
-            rec_txt = np.loadtxt(rec_filepath, delimiter=',')
-            cond_label = rec_txt[:, 3] <= 3  # 6 spikes to 1/0 variable
-            cond_label = cond_label.astype('int')  # change bool values to integers (1/0)
-            rec_txt = np.c_[rec_txt, cond_label]  # [ch_loc, t_start, t_end, 1-6_types, 0/1_lab]
-            rec_txt = np.round(rec_txt, 1)  # np.round: round to float
-            rec_txt = rec_txt[rec_txt[:, 1].argsort()]  # ascending sort by the second column (t_start)
+                    sampleID += 1
 
-            # remove 90% overlapping time periods
-            # not necessary after round time to 0.1, largest overlapping = 0.9 / 1.1 < 90%
-            rec_time = rec_txt[:, 1:3]  # select two columns of time
-            rec_time = np.unique(rec_time, axis=0)  # select unique periods
+                    time_start_end = np.concatenate((time_start_end, np.array([t_start, t_end]).reshape(1, 2)),
+                                                    axis=0)
+                    filename.append(sub_experiment)
 
-            # segment data
-            for rec in range(rec_time.shape[0]):
-                for k in range(times):
-                    t_start = rec_time[rec, 0] + (k - (times + 1) / 2)
-                    t_end = rec_time[rec, 1] + (k - (times + 1) / 2)
-                    nt_start = round(t_start * Fs)  # round to integer
-                    nt_end = round(t_end * Fs)
-                    t0_start = nt_start - nZ
-                    t0_end = nt_end + nZ
-                    ts_start = nt_start - int(Fs / 2)  # leave .5 seconds left
-                    ts_end = nt_end + int(Fs / 2)  # leave .5 seconds right
-                    # --------
-                    nt_start = round(t_start * downrate_)  # round to integer
-                    nt_end = round(t_end * downrate_)
-                    t0_start_ = nt_start - nZ_
-                    t0_end_ = nt_end + nZ_
-                    if ts_start >= 0 and ts_end <= eeg.shape[1]:
-                        eegseg = eeg[:, t0_start: t0_end]
-                        eegseg_ = subeeg[:, t0_start_: t0_end_]
-                        # cond_channel = np.where((rec_txt[:, 1] == t_start)
-                        #                         & (rec_txt[:, 2] == t_end))
-                        # info = rec_txt[cond_channel, :][0]  # select info during the period
-                        # spike_type = np.unique(info[:, -2])  # 1-6 unique types in the 1s epoch
-                        # spike_type_per_patient = np.concatenate((spike_type_per_patient, spike_type))
-                        # # target var
-                        # target1 = max(info[:, -1])  # 1 for containing IEDs
-                        # target0 = min(info[:, -1])  # 0 for no IEDs
-                        # target = np.array([target1])
-                        # aggregate data
-                        res = np.expand_dims(eegseg.transpose(), axis=0)
-                        res_ = np.expand_dims(eegseg_.transpose(), axis=0)
-                        X = np.concatenate((X, res), axis=0)
-                        X_ = np.concatenate((X_, res_), axis=0)
-                        # y.extend(target)
+        print('--------------------')
+        print('Predicting...')
 
-                        sampleID += 1
+        # load model
+        with open("model/spikenet1.o_structure.txt", "r") as ff:
+            json_string = ff.read()
 
-                        time_start_end = np.concatenate((time_start_end, np.array([t_start, t_end]).reshape(1, 2)),
-                                                        axis=0)
-                        filename.append(sub_experiment)
+        model = model_from_json(json_string)
+        model.load_weights("model/spikenet1.o_weights.h5")
 
-    # load model
-    with open("model/spikenet1.o_structure.txt", "r") as ff:
-        json_string = ff.read()
+        print(X.shape), print(X_.shape)
+        n_sample_i = X_.shape[0]
 
-    model = model_from_json(json_string)
-    model.load_weights("model/spikenet1.o_weights.h5")
+        x = np.split(X, np.arange(batch_size, n_sample_i + 1, batch_size))
+        for i in range(len(x)):
+            X = np.expand_dims(x[i], axis=2)
+            yp.extend(model.predict(X).flatten())
 
-    print(X.shape), print(X_.shape)
-    n_sample_i = X_.shape[0]
+        print(len(yp)), print(len(time_start_end)), print(len(filename))
 
-    x = np.split(X, np.arange(batch_size, n_sample_i + 1, batch_size))
-    for i in range(len(x)):
-        X = np.expand_dims(x[i], axis=2)
-        yp.extend(model.predict(X).flatten())
+        # y = np.array(y)
+        yp = np.array(yp)
+        filename = np.array(filename)
 
-    print(len(yp)), print(len(time_start_end)), print(len(filename))
+        for k in range(n_sample_i):
+            eegdata = X_[k, :, :].transpose()
+            sample_name = str(int(sampleID - n_sample_i + k)) + '.npz'
+            print(sample_name)
+            np.savez(osp.join(train_save_path, sample_name),
+                     eeg=eegdata, target=np.array([yp[k]]),
+                     time=time_start_end[k, :], filename=np.array([filename[k]]))
 
-    # y = np.array(y)
-    yp = np.array(yp)
-    filename = np.array(filename)
+        subID += 1
+        print('--------------------')
+        print('Subject id ' + str(subID) + ' done')
+        print('====================')
 
-    for k in range(n_sample_i):
-        eegdata = X_[k, :, :].transpose()
-        sample_name = str(int(sampleID - n_sample_i + k)) + '.npz'
-        print(sample_name)
-        np.savez(osp.join(train_save_path, sample_name),
-                 eeg=eegdata, target=np.array([yp[k]]),
-                 time=time_start_end[k, :], filename=np.array([filename[k]]))
+    except Exception as error:
+        print("An error occurred:", error)
+        continue  # force to start the next iteration
 
-# yb = (yp > 0.5).astype(float)  # threshold
-# recall = recall_score(y, yb, average='binary')  # recall = TP / (TP + FN), find completely
-# prec = precision_score(y, yb, average='binary')  # precision = TP / (TP + FP), find accurately
-# spec = specificity_score(y, yb, average='binary')
-# f1 = f1_score(y, yb, average='binary')  # f1 score = 2 * precision * recall / (precision + recall)
-# prauc = average_precision_score(y, yp)
-# auc = roc_auc_score(y, yp)
-# oos = {'recall': round(recall, 4),
-#        'prec': round(prec, 4),
-#        'spec': round(spec, 4),
-#        'f1': round(f1, 4),
-#        'prauc': round(prauc, 4),
-#        'auc': round(auc, 4)}
-# print(oos)
-
-# # export
-# if len(data_type) == 1:
-#     output_path = targetDir + "SSD_tuh_" + data_type[0] + "_" + str(times)
-# elif len(data_type) == 2:
-#     output_path = targetDir + "SSD_tuh_" + data_type[0] + "_" + data_type[1]
-# else:
-#     raise Exception("Error.")
-#
-# np.savez(output_path, y=y, yp=yp, time=time_start_end, filename=filename)
+print("The total number of subjects is " + str(subID))
+print("The total number of samples is " + str(sampleID))
 
 end = time.time()
 
