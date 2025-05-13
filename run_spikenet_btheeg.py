@@ -295,12 +295,12 @@ for seed in seed_range:
         y = np.array(y)
 
         # export
-        output_path = dataDir + SSDname + "/SSD_btheeg_seed" + str(seed)
+        output_path = dataDir + SSDname + "/seed" + str(seed)
         np.savez(output_path, X=X, y=y)
 
     else:
 
-        output_path = dataDir + SSDname + "/SSD_btheeg_seed" + str(seed) + '.npz'
+        output_path = dataDir + SSDname + "/seed" + str(seed) + '.npz'
         Y = np.load(output_path)
         y = Y['y']
         X = Y['X']
