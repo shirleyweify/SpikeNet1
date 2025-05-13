@@ -3,6 +3,8 @@ import os
 import os.path as osp
 import pandas as pd
 import math
+import sys
+from itertools import chain
 from mne.filter import notch_filter, filter_data, resample
 from keras.models import model_from_json
 from sklearn.metrics import f1_score
@@ -11,10 +13,17 @@ from sklearn.metrics import recall_score
 from sklearn.metrics import average_precision_score
 from sklearn.metrics import roc_auc_score
 from imblearn.metrics import specificity_score
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+import matplotlib.backends.backend_pdf as backend_pdf
 
 seed_range = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+# seed_range = [1]
 
-train = False  # True: train; False: combine results
+prepare = True  # True: generate data; False: combine results
+contain_spikefile_in_bckg = True  # default: False (only crop normal files); True: include spikefiles in background
+draw = False  # default: False, True if we need viz to check signals
+SSDname = 'SSD_spikenet_btheeg'  # default: 'SSD_spikenet_btheeg' (same ratio as MEG), 'SSD_spikenet_btheeg_LS' for more background samples
 
 # # settings
 # np.random.seed(1)
@@ -24,12 +33,8 @@ path = osp.join(osp.sep, 'Users', 'shirleywei', 'Dropbox', 'Data', 'Spike')
 files = os.listdir(osp.join(path, 'newEEGdata'))
 filesubs = [f[:-4] for f in files]
 
-test_model = 'tuev'  # 'meg' or 'tuev'
-calcu_ratio = False
-chavg = False
-
 # global var
-notch_freq = 60
+notch_freq = 50  # for eeg data from China
 bp_freq = [0.5, None]
 org_channels = ['FP1', 'FP2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2', 'F7', 'F8', 'T3', 'T4', 'T5', 'T6', 'FZ',
                 'CZ', 'PZ']
@@ -40,7 +45,7 @@ bipolar_channels = ['FP1-F7', 'F7-T3', 'T3-T5', 'T5-O1', 'FP2-F8', 'F8-T4', 'T4-
 Fs = 128
 L = int(round(1 * Fs))
 step = 1
-batch_size = 1000
+batch_size = 256
 
 
 def read_m00_file(path):
@@ -84,15 +89,16 @@ def preprocess_eeg(X):
 downrate = Fs
 nX = 128
 nZ = 0
-ratio = 0.37455223679603544  # 1/0 ratio according to MEG data
+if SSDname == 'SSD_spikenet_btheeg':
+    ratio = 0.37455223679603544  # 1/0 ratio according to MEG data
+elif SSDname == 'SSD_spikenet_btheeg_LS':
+    ratio = 0.1
+else:
+    raise Exception("SSD name not correctly specified.")
 
 # -----------------
 nT = nX + nZ * 2
 nt = int(nT / 2)  # half length
-sampleID = 0
-samplespike = 0
-samplenormal = 0
-nrows = []
 
 # read seizure and spike file names
 # seizure
@@ -108,6 +114,8 @@ normalfilesub = [f for f in filesubs if f not in abfilesub]
 
 # create spike file dict
 filedict = dict()  # 'filesub': [time1, time2, ...] (seconds) if time is empty then normal subs
+spikefiledict = dict()
+normalfiledict = dict()
 spikefile = spikefile[spikefile['comments'].isna()]  # remove red rows (not sure)
 spikefilesub = spikefile['interictal_file'].dropna().unique().tolist()
 numspikefile = 0
@@ -116,19 +124,22 @@ for f in spikefilesub:
     extime = pd['exact_time'].unique().tolist()
     sec = [t.minute * 60 + t.second + t.microsecond / 1e6 for t in extime]  # convert to seconds
     filedict[f] = sec
+    spikefiledict[f] = sec
     numspikefile += len(sec)
 for f in normalfilesub:
     filedict[f] = list()
+    normalfiledict[f] = list()
 
 # spike files and normal ones
-randn = math.ceil((numspikefile * ((1 - ratio) / ratio)) / len(normalfilesub))
+# randn = math.ceil((numspikefile * ((1 - ratio) / ratio)) / len(normalfilesub))
 
 # ==============================================
 
 # I/O directories
 targetDir = "Output/"
-if not os.path.exists(targetDir):
-    os.makedirs(targetDir)
+dataDir = "Data/"
+if not os.path.exists(dataDir + SSDname):
+    os.makedirs(dataDir + SSDname)
 
 # load model
 with open("model/spikenet1.o_structure.txt", "r") as ff:
@@ -136,8 +147,6 @@ with open("model/spikenet1.o_structure.txt", "r") as ff:
 
 model = model_from_json(json_string)
 model.load_weights("model/spikenet1.o_weights.h5")
-
-
 
 oos = {'recall': [],
        'prec': [],
@@ -151,110 +160,222 @@ index_col = []
 
 for seed in seed_range:
 
-    if train:
+    if prepare:
         np.random.seed(seed)
 
         # initialization
         y, yp = [], []
         X = np.array([]).reshape(0, 128, 37)
+        sampleID = 0
+        samplespike = 0
+        samplenormal = 0
 
-        # ==============================================
-        for filesub in filedict.keys():
-            filename = osp.join(path, 'newEEGdata', filesub + '.m00')
-            if osp.exists(filename):
-                # read X
-                data = read_m00_file(filename)
-                eeg = preprocess_eeg(data)
+        original_stdout = sys.stdout
 
-                # ---------------------------------------
-                # read y
-                times = np.array(filedict[filesub])
-                msm = eeg.shape[1]  # total number of measurements
-                if len(times) != 0:  # spike time, unit: second(s)
-                    pos = np.round(times * downrate)
-                    target = np.array([1])
-                else:  # normal, randomly pick pos to crop
-                    pos = np.random.choice(range(nt, msm, nT), size=randn, replace=False)
-                    target = np.array([0])
-                for p in pos:
-                    p = round(p)
-                    subeeg = eeg[:, (p - nt): (p + nt)]
-                    # aggregate data
-                    res = np.expand_dims(subeeg.transpose(), axis=0)
-                    X = np.concatenate((X, res), axis=0)
-                    y.extend(target)
-                    # ========================
-                    sampleID += 1
-                    if target[0] == 1:
-                        samplespike += 1
+        with open(dataDir + SSDname + '/seed' + str(seed) + '.txt', 'w') as f:
+            sys.stdout = f
+
+            # =============WRITE START=================================
+            for filesub in spikefiledict.keys():
+                filename = osp.join(path, 'newEEGdata', filesub + '.m00')
+                if osp.exists(filename):
+                    # read X
+                    eeg = read_m00_file(filename)
+                    eeg = preprocess_eeg(eeg)
+
+                    # ---------------------------------------
+                    # read y
+                    times = np.array(filedict[filesub])
+                    msm = eeg.shape[1]  # total number of measurements
+                    if len(times) == 0:
+                        continue
                     else:
-                        samplenormal += 1
-                    if (samplespike / sampleID) < ratio:
-                        break
-                if (samplespike / sampleID) < ratio:
-                    break
+                        pos = np.round(times * downrate)
+                        for p in pos:
+                            p = round(p)
+                            subeeg = eeg[:, (p - nt): (p + nt)]
+                            # aggregate data
+                            res = np.expand_dims(subeeg.transpose(), axis=0)
+                            X = np.concatenate((X, res), axis=0)
+                            y.extend(np.array([1]))
+                            sampleID += 1
+                            samplespike += 1
+                            print(
+                                "No. " + str(sampleID) + " (spike): " + filesub + " " + str(
+                                    round(p / downrate, 2)) + "s.")
+                        if contain_spikefile_in_bckg:
+                            # available ranges
+                            rangelist = chain(range(nt, math.floor(times[0] * downrate - nT * 2 + 1), nT),
+                                              range(math.ceil(times[-1] * downrate + nT * 2), msm - nt + 1, nT))
+                            if len(times) > 1:
+                                for i in range(len(times) - 1):
+                                    rangelist = chain(rangelist, range(math.ceil(times[i] * downrate + nT * 2),
+                                                                       math.floor(times[i + 1] * downrate - nT * 2 + 1),
+                                                                       nT))
+                            bg_pos = np.random.choice(list(rangelist), size=len(times), replace=False)
+                            for p in bg_pos:
+                                p = round(p)
+                                subeeg = eeg[:, (p - nt): (p + nt)]
+                                # aggregate data
+                                res = np.expand_dims(subeeg.transpose(), axis=0)
+                                X = np.concatenate((X, res), axis=0)
+                                y.extend(np.array([0]))
+                                sampleID += 1
+                                samplenormal += 1
+                                print("No. " + str(sampleID) + " (background): " + filesub + " " + str(
+                                    round(p / downrate, 2)) + "s.")
+                    # if len(times) != 0:  # spike time, unit: second(s)
+                    #     pos = np.round(times * downrate)
+                    #     target = np.array([1])
+                    # else:  # normal, randomly pick pos to crop
+                    #     pos = np.random.choice(range(nt, msm, nT), size=randn, replace=False)
+                    #     target = np.array([0])
+                    # for p in pos:
+                    #     p = round(p)
+                    #     subeeg = eeg[:, (p - nt): (p + nt)]
+                    #     # aggregate data
+                    #     res = np.expand_dims(subeeg, axis=0)
+                    #     X = np.concatenate((X, res), axis=0)
+                    #     y.extend(target)
+                    #     # ========================
+                    #     sampleID += 1
+                    #     if target[0] == 1:
+                    #         samplespike += 1
+                    #     else:
+                    #         samplenormal += 1
+                    #     if (samplespike / sampleID) < ratio:
+                    #         break
+                    # if (samplespike / sampleID) < ratio:
+                    #     break
 
-        print(X.shape)
-        x = np.split(X, np.arange(batch_size, sampleID + 1, batch_size))
-        for i in range(len(x)):
-            X = np.expand_dims(x[i], axis=2)
-            yp.extend(model.predict(X).flatten())
+            randn = math.ceil((samplespike / ratio - sampleID) / len(normalfiledict))
+            # randn = math.ceil((numspikefile * ((1 - ratio) / ratio)) / len(normalfilesub))
+
+            # ==============================================
+            for filesub in normalfiledict.keys():
+                filename = osp.join(path, 'newEEGdata', filesub + '.m00')
+                if osp.exists(filename):
+                    # read X
+                    eeg = read_m00_file(filename)
+                    eeg = preprocess_eeg(eeg)
+
+                    # ---------------------------------------
+                    # read y
+                    times = np.array(filedict[filesub])
+                    msm = eeg.shape[1]  # total number of measurements
+
+                    # -----------------------------------------------
+                    pos = np.random.choice(range(nt, msm - nt + 1, nT), size=randn, replace=False)
+                    for p in pos:
+                        p = round(p)
+                        subeeg = eeg[:, (p - nt): (p + nt)]
+                        # aggregate data
+                        res = np.expand_dims(subeeg.transpose(), axis=0)
+                        X = np.concatenate((X, res), axis=0)
+                        y.extend(np.array([0]))
+                        # ========================
+                        sampleID += 1
+                        samplenormal += 1
+                        print(
+                            "No. " + str(sampleID) + " (normal): " + filesub + " " + str(round(p / downrate, 2)) + "s.")
+                        if (samplespike / sampleID) <= ratio:
+                            break
+                    if (samplespike / sampleID) <= ratio:
+                        break
+
+            print('\n\n\n')
+            print("The total number of samples is " + str(sampleID))
+            print("The number of spike samples is " + str(samplespike))
+            print("The number of non-spike samples is " + str(samplenormal))
+
+            sys.stdout = original_stdout
+
+            # =============WRITE END=================================
 
         y = np.array(y)
-        yp = np.array(yp)
-        # print(y), print(yp)
 
         # export
-        output_path = targetDir + "SSD_btheeg/SSD_btheeg_seed" + str(seed)
-        np.savez(output_path, y=y, yp=yp)
+        output_path = dataDir + SSDname + "/SSD_btheeg_seed" + str(seed)
+        np.savez(output_path, X=X, y=y)
 
     else:
-        output_path = targetDir + "SSD_btheeg/SSD_btheeg_seed" + str(seed) + '.npz'
+
+        output_path = dataDir + SSDname + "/SSD_btheeg_seed" + str(seed) + '.npz'
         Y = np.load(output_path)
         y = Y['y']
-        yp = Y['yp']
+        X = Y['X']
 
-        yb = (yp > 0.25).astype(float)  # threshold
-        recall = recall_score(y, yb, average='binary')  # recall = TP / (TP + FN), find completely
-        prec = precision_score(y, yb, average='binary')  # precision = TP / (TP + FP), find accurately
-        spec = specificity_score(y, yb, average='binary')
-        f1 = f1_score(y, yb, average='binary')  # f1 score = 2 * precision * recall / (precision + recall)
-        prauc = average_precision_score(y, yp)
-        auc = roc_auc_score(y, yp)
-        # oos = {'recall': round(recall, 4),
-        #        'prec': round(prec, 4),
-        #        'spec': round(spec, 4),
-        #        'f1': round(f1, 4),
-        #        'prauc': round(prauc, 4),
-        #        'auc': round(auc, 4)}
-        REC.append(round(recall, 4))
-        PREC.append(round(prec, 4))
-        SPEC.append(round(spec, 4))
-        F1.append(round(f1, 4))
-        PRAUC.append(round(prauc, 4))
-        AUC.append(round(auc, 4))
-        index_col.append(seed)
-        # print(oos)
+        yp = []
 
+    print(X.shape)
+    x = np.split(X, np.arange(batch_size, sampleID + 1, batch_size))
+    for i in range(len(x)):
+        X_i = np.expand_dims(x[i], axis=2)
+        print(X_i.shape)
+        yp.extend(model.predict(X_i).flatten())
 
-# print(oos)
-# res = pd.DataFrame(oos)
-# res = pd.DataFrame(data={
-#     'recall': REC,
-#     'prec': PREC,
-#     'spec': SPEC,
-#     'f1': F1,
-#     'prauc': PRAUC,
-#     'auc': AUC
-# })
-# print(res)
-# res.to_csv(targetDir + "testTable_SSD_btheeg.csv")
+    yp = np.array(yp)
 
-if not train:
-    ar = np.array([index_col, REC, PREC, SPEC, F1, PRAUC, AUC]).transpose()
-    print(ar)
-    np.savetxt(targetDir + "testTable_SSD_btheeg.csv", ar, fmt='%.4f',
-               delimiter=",", header="index,recall,prec,spec,f1,prauc,auc")
+    yb = (yp > 0.25).astype(float)  # threshold
+    recall = recall_score(y, yb, average='binary')  # recall = TP / (TP + FN), find completely
+    prec = precision_score(y, yb, average='binary')  # precision = TP / (TP + FP), find accurately
+    spec = specificity_score(y, yb, average='binary')
+    f1 = f1_score(y, yb, average='binary')  # f1 score = 2 * precision * recall / (precision + recall)
+    prauc = average_precision_score(y, yp)
+    auc = roc_auc_score(y, yp)
+    oos = {'recall': round(recall, 4),
+           'prec': round(prec, 4),
+           'spec': round(spec, 4),
+           'f1': round(f1, 4),
+           'prauc': round(prauc, 4),
+           'auc': round(auc, 4)}
+    REC.append(round(recall, 4))
+    PREC.append(round(prec, 4))
+    SPEC.append(round(spec, 4))
+    F1.append(round(f1, 4))
+    PRAUC.append(round(prauc, 4))
+    AUC.append(round(auc, 4))
+    index_col.append(seed)
+    print(oos)
+
+    if draw:
+        print("Begin to plot:")
+        savepdfpath = osp.join(dataDir + SSDname + "/seed" + str(seed) + '.pdf')
+        pdf = backend_pdf.PdfPages(savepdfpath)
+        for row in range(X.shape[0]):
+            subeeg = res[row, 0, :19, :]
+
+            nd_ = subeeg.shape[0]
+            nt_ = subeeg.shape[1]
+            timent = np.arange(nt_)
+            fig = plt.figure(figsize=(3, 6))
+            gs = gridspec.GridSpec(nrows=nd_, ncols=2)
+
+            for d in range(nd_):
+                ax = fig.add_subplot(gs[d, 0])
+                txt = ax.text(0.5, 0.5,
+                              mono_channels[d] + '-avg',
+                              size=8, ha='center', color='black')
+                if d == 0:
+                    ax.set_title('No.' + str(row), fontsize=8)
+                ax.axis('off')
+                ax = fig.add_subplot(gs[d, 1])
+                ax.tick_params(left=False, labelleft=False, bottom=False, labelbottom=False)
+                # ax.plot(time, data[d, :], linewidth=1)  # maybe should be commented
+                ax.plot(timent, subeeg[d, :], linewidth=0.8)
+                if d == 0:
+                    ax.set_title('y: ' + str(int(y[row])) + ', yp: ' + str(round(float(yp[row]), 2)), fontsize=8)
+                ax.axis('off')
+
+            pdf.savefig(fig)
+            plt.clf()
+
+        pdf.close()
+
+ar = np.array([index_col, REC, PREC, SPEC, F1, PRAUC, AUC]).transpose()
+print(ar)
+np.savetxt(targetDir + "testTable_" + SSDname + ".csv", ar, fmt='%.4f', delimiter=",",
+           header="seed,recall,prec,spec,f1,prauc,auc")
 
 # # export
 # output_path = targetDir + "SSD_btheeg"
