@@ -20,10 +20,11 @@ import matplotlib.backends.backend_pdf as backend_pdf
 seed_range = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 # seed_range = [1]
 
-prepare = True  # True: generate data; False: combine results
+prepare = False  # True: generate data; False: combine results
 contain_spikefile_in_bckg = True  # default: False (only crop normal files); True: include spikefiles in background
 draw = False  # default: False, True if we need viz to check signals
-SSDname = 'SSD_spikenet_btheeg'  # default: 'SSD_spikenet_btheeg' (same ratio as MEG), 'SSD_spikenet_btheeg_LS' for more background samples
+random = True
+SSDname = 'SSD_spikenet_bth_EQ'  # default: 'SSD_spikenet_btheeg' (same ratio as MEG), 'SSD_spikenet_btheeg_LS' for more background samples
 
 # # settings
 # np.random.seed(1)
@@ -89,12 +90,12 @@ def preprocess_eeg(X):
 downrate = Fs
 nX = 128
 nZ = 0
-if SSDname == 'SSD_spikenet_btheeg':
+if (SSDname == 'SSD_spikenet_btheeg') or (SSDname == 'SSD_spikenet_bth'):
     ratio = 0.37455223679603544  # 1/0 ratio according to MEG data
-elif SSDname == 'SSD_spikenet_btheeg_LS':
+elif SSDname[-2:] == 'LS':
     ratio = 0.1
 else:
-    raise Exception("SSD name not correctly specified.")
+    ratio = 0.5  # do not use this
 
 # -----------------
 nT = nX + nZ * 2
@@ -111,17 +112,21 @@ interictal_filesub = spikefile['interictal_file'].dropna().unique()
 ictal_filesub = spikefile['ictal_file'].dropna().unique()
 abfilesub = np.array(list(set(interictal_filesub.tolist() + ictal_filesub.tolist() + seifilesub.tolist())))
 normalfilesub = [f for f in filesubs if f not in abfilesub]
+# background
+bckgfile = pd.read_excel(osp.join(path, 'newEEGdata_tb', 'normal_files.xlsx'), header=0)
+bckgfilesub = bckgfile['file'].dropna().unique()
 
 # create spike file dict
 filedict = dict()  # 'filesub': [time1, time2, ...] (seconds) if time is empty then normal subs
 spikefiledict = dict()
 normalfiledict = dict()
+bckgfiledict = dict()
 spikefile = spikefile[spikefile['comments'].isna()]  # remove red rows (not sure)
 spikefilesub = spikefile['interictal_file'].dropna().unique().tolist()
 numspikefile = 0
 for f in spikefilesub:
-    pd = spikefile[spikefile['interictal_file'] == f]
-    extime = pd['exact_time'].unique().tolist()
+    df = spikefile[spikefile['interictal_file'] == f]
+    extime = df['exact_time'].unique().tolist()
     sec = [t.minute * 60 + t.second + t.microsecond / 1e6 for t in extime]  # convert to seconds
     filedict[f] = sec
     spikefiledict[f] = sec
@@ -129,6 +134,10 @@ for f in spikefilesub:
 for f in normalfilesub:
     filedict[f] = list()
     normalfiledict[f] = list()
+for f in bckgfilesub:
+    df = bckgfile[bckgfile['file'] == f]
+    sec = df['time'].unique().tolist()
+    bckgfiledict[f] = sec
 
 # spike files and normal ones
 # randn = math.ceil((numspikefile * ((1 - ratio) / ratio)) / len(normalfilesub))
@@ -185,7 +194,7 @@ for seed in seed_range:
 
                     # ---------------------------------------
                     # read y
-                    times = np.array(filedict[filesub])
+                    times = np.array(spikefiledict[filesub])
                     msm = eeg.shape[1]  # total number of measurements
                     if len(times) == 0:
                         continue
@@ -212,7 +221,7 @@ for seed in seed_range:
                                     rangelist = chain(rangelist, range(math.ceil(times[i] * downrate + nT * 2),
                                                                        math.floor(times[i + 1] * downrate - nT * 2 + 1),
                                                                        nT))
-                            bg_pos = np.random.choice(list(rangelist), size=len(times), replace=False)
+                            bg_pos = np.random.choice(list(rangelist), size=round(len(times) * (1 - ratio) / ratio), replace=False)
                             for p in bg_pos:
                                 p = round(p)
                                 subeeg = eeg[:, (p - nt): (p + nt)]
@@ -252,36 +261,48 @@ for seed in seed_range:
             # randn = math.ceil((numspikefile * ((1 - ratio) / ratio)) / len(normalfilesub))
 
             # ==============================================
-            for filesub in normalfiledict.keys():
-                filename = osp.join(path, 'newEEGdata', filesub + '.m00')
-                if osp.exists(filename):
-                    # read X
-                    eeg = read_m00_file(filename)
-                    eeg = preprocess_eeg(eeg)
+            if random:
+                nfiledict = normalfiledict
+            else:
+                nfiledict = bckgfiledict
 
-                    # ---------------------------------------
-                    # read y
-                    times = np.array(filedict[filesub])
-                    msm = eeg.shape[1]  # total number of measurements
+            if (not random) or (not contain_spikefile_in_bckg):
 
-                    # -----------------------------------------------
-                    pos = np.random.choice(range(nt, msm - nt + 1, nT), size=randn, replace=False)
-                    for p in pos:
-                        p = round(p)
-                        subeeg = eeg[:, (p - nt): (p + nt)]
-                        # aggregate data
-                        res = np.expand_dims(subeeg.transpose(), axis=0)
-                        X = np.concatenate((X, res), axis=0)
-                        y.extend(np.array([0]))
-                        # ========================
-                        sampleID += 1
-                        samplenormal += 1
-                        print(
-                            "No. " + str(sampleID) + " (normal): " + filesub + " " + str(round(p / downrate, 2)) + "s.")
-                        if (samplespike / sampleID) <= ratio:
+                for filesub in nfiledict.keys():
+                    filename = osp.join(path, 'newEEGdata', filesub + '.m00')
+                    if osp.exists(filename):
+                        # read X
+                        eeg = read_m00_file(filename)
+                        eeg = preprocess_eeg(eeg)
+
+                        # ---------------------------------------
+                        # read y
+                        times = np.array(nfiledict[filesub])
+                        msm = eeg.shape[1]  # total number of measurements
+                        if len(times) == 0:
+                            continue
+                        else:
+                            pos = np.round(times * downrate)
+
+                        # -----------------------------------------------
+                        # if random:
+                        #     pos = np.random.choice(range(nt, msm - nt + 1, nT), size=randn, replace=False)
+                        for p in pos:
+                            p = round(p)
+                            subeeg = eeg[:, (p - nt): (p + nt)]
+                            # aggregate data
+                            res = np.expand_dims(subeeg.transpose(), axis=0)
+                            X = np.concatenate((X, res), axis=0)
+                            y.extend(np.array([0]))
+                            # ========================
+                            sampleID += 1
+                            samplenormal += 1
+                            print(
+                                "No. " + str(sampleID) + " (normal): " + filesub + " " + str(round(p / downrate, 2)) + "s.")
+                            if random and ((samplespike / sampleID) <= ratio):
+                                break
+                        if random and ((samplespike / sampleID) <= ratio):
                             break
-                    if (samplespike / sampleID) <= ratio:
-                        break
 
             print('\n\n\n')
             print("The total number of samples is " + str(sampleID))
@@ -308,7 +329,7 @@ for seed in seed_range:
         yp = []
 
     print(X.shape)
-    x = np.split(X, np.arange(batch_size, sampleID + 1, batch_size))
+    x = np.split(X, np.arange(batch_size, X.shape[0] + 1, batch_size))
     for i in range(len(x)):
         X_i = np.expand_dims(x[i], axis=2)
         print(X_i.shape)
@@ -316,7 +337,9 @@ for seed in seed_range:
 
     yp = np.array(yp)
 
-    yb = (yp > 0.25).astype(float)  # threshold
+    thres = 0.5
+
+    yb = (yp > thres).astype(float)  # threshold
     recall = recall_score(y, yb, average='binary')  # recall = TP / (TP + FN), find completely
     prec = precision_score(y, yb, average='binary')  # precision = TP / (TP + FP), find accurately
     spec = specificity_score(y, yb, average='binary')
@@ -343,7 +366,7 @@ for seed in seed_range:
         savepdfpath = osp.join(dataDir + SSDname + "/seed" + str(seed) + '.pdf')
         pdf = backend_pdf.PdfPages(savepdfpath)
         for row in range(X.shape[0]):
-            subeeg = res[row, 0, :19, :]
+            subeeg = X[row, :, :19].transpose()
 
             nd_ = subeeg.shape[0]
             nt_ = subeeg.shape[1]
@@ -374,7 +397,7 @@ for seed in seed_range:
 
 ar = np.array([index_col, REC, PREC, SPEC, F1, PRAUC, AUC]).transpose()
 print(ar)
-np.savetxt(targetDir + "testTable_" + SSDname + ".csv", ar, fmt='%.4f', delimiter=",",
+np.savetxt(targetDir + "testTable_" + SSDname + '_' + str(thres) + ".csv", ar, fmt='%.4f', delimiter=",",
            header="seed,recall,prec,spec,f1,prauc,auc")
 
 # # export
