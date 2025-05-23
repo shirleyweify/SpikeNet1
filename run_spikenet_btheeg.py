@@ -146,7 +146,7 @@ for f in bckgfilesub:
 
 # I/O directories
 targetDir = "Output/"
-dataDir = "Data/"
+dataDir = "/Users/shirleywei/Dropbox/Projects/NestedDeepLearningModel/Dataset/"
 if not os.path.exists(dataDir + SSDname):
     os.makedirs(dataDir + SSDname)
 
