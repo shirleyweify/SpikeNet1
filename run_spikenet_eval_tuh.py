@@ -101,7 +101,7 @@ def preprocess_eeg(X):
 
     return X
 
-arr = np.load("/Users/shirleywei/Dropbox/Projects/NestedDeepLearningModel/GitCodesMac/AIcode/Output/TUH_EVAL.npy")
+arr = np.load("/Users/shirleywei/Dropbox/Projects/NestedDeepLearningModel/GitCodesMac/AIcode/Output/TUH_TEST_LOCAL.npy")
 datapath = "/Users/shirleywei/Dropbox/Data/Spike/tuh22eeg500hf70/"
 
 for fileindex in arr:
@@ -111,10 +111,18 @@ for fileindex in arr:
     target = ar['target']
     # print(filename), print(time), print(target)
     if fileindex < 10000:
+        # ar = np.load(datapath + 'train/' + str(fileindex) + '.npz')
+        # filename = ar['filename'][0]
+        # time = ar['time']
+        # target = ar['target']
         read_data_path = '/Users/shirleywei/Dropbox/Data/Spike/tuev_v2.0.0/edf/train'
         subject_path = osp.join(read_data_path, filename[:8])
         edf_filepath = osp.join(subject_path, filename + '.edf')
     else:
+        # ar = np.load(datapath + 'eval/' + str(fileindex) + '.npz')
+        # filename = ar['filename'][0]
+        # time = ar['time']
+        # target = ar['target']
         read_data_path = '/Users/shirleywei/Dropbox/Data/Spike/tuev_v2.0.0/edf/eval'
         subject_path = osp.join(read_data_path, filename[5:8])
         edf_filepath = osp.join(subject_path, filename + '.edf')
@@ -255,15 +263,20 @@ spec = specificity_score(y, yb, average='binary')
 f1 = f1_score(y, yb, average='binary')  # f1 score = 2 * precision * recall / (precision + recall)
 prauc = average_precision_score(y, yp)
 auc = roc_auc_score(y, yp)
-oos = {'recall': round(recall, 4),
-       'prec': round(prec, 4),
-       'spec': round(spec, 4),
-       'f1': round(f1, 4),
-       'prauc': round(prauc, 4),
-       'auc': round(auc, 4)}
+oos = {'recall': round(recall, 6),
+       'prec': round(prec, 6),
+       'spec': round(spec, 6),
+       'f1': round(f1, 6),
+       'prauc': round(prauc, 6),
+       'auc': round(auc, 6)}
 print(oos)
 
-output_path = targetDir + "SSD_spikenet_eval_tuh"
+savename = "SpikeNet_eval_TUHhf45_seed8_npseed2029"
+
+res = pd.DataFrame(oos)
+res.to_csv("Output/" + savename + ".csv", index=False)
+
+output_path = targetDir + savename + ".npz"
 
 # # export
 # if len(data_type) == 1:
