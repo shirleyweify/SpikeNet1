@@ -17,8 +17,9 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.backends.backend_pdf as backend_pdf
 
-seed_range = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-# seed_range = [1]
+# seed_range = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+# seed_range = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+seed_range = range(1, 51)
 
 prepare = False  # True: generate data; False: combine results
 contain_spikefile_in_bckg = True  # default: False (only crop normal files); True: include spikefiles in background
@@ -336,6 +337,9 @@ for seed in seed_range:
         yp.extend(model.predict(X_i).flatten())
 
     yp = np.array(yp)
+
+    savepath = dataDir + SSDname + '/output_seed' + str(seed) + '.npz'
+    np.savez(savepath, outputm=yp, targetm=y)
 
     thres = 0.5
 
