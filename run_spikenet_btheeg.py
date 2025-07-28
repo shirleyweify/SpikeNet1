@@ -21,14 +21,47 @@ import matplotlib.backends.backend_pdf as backend_pdf
 # seed_range = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
 seed_range = range(1, 51)
 
-prepare = False  # True: generate data; False: combine results
+prepare = True  # True: generate data; False: combine results
 contain_spikefile_in_bckg = True  # default: False (only crop normal files); True: include spikefiles in background
 draw = False  # default: False, True if we need viz to check signals
 random = True
 SSDname = 'SSD_spikenet_bth_EQ'  # default: 'SSD_spikenet_btheeg' (same ratio as MEG), 'SSD_spikenet_btheeg_LS' for more background samples
+bad_channels = True  # default: False
 
 # # settings
 # np.random.seed(1)
+
+
+bad_channel_dict = {  # self defined
+    'FC0390DA': ['O1'],
+    'DA402ATD': ['FP2'],
+    'FB425AFT': ['O2'],
+    'DA00515O': ['PZ'],
+    'DA00515N': ['CZ'],
+    'FB425BH2': ['C3'],
+    'FA431BS3': ['O1', 'O2'],
+    'FA421BS6': ['FP1', 'FP2'],
+    'DA402BC1': ['CZ'],
+    'FT1813N1': ['FP1'],
+    'FA404F9W': ['T4'],
+    'FA431CD7': ['PZ'],
+    'FA431CD8': [],
+    'DA402BO0': ['FZ'],
+    'DA00500W': ['T5', 'T6'],
+    'DA00500V': ['O1'],
+    'DC01100H': ['P4'],
+    'FB4259VQ': ['P3'],
+    'DA0050ZH': ['O2'],
+    'DA0050ZJ': ['PZ', 'O2'],
+    'FA4318GU': [],
+    'FA4318GW': [],
+    'FC0390TN': ['F4'],
+    'FB425C7S': ['F8'],
+    'FB425C7U': ['FP1'],
+    'FB4259SW': ['T4'],
+    'DA0050VZ': ['O1', 'O2'],
+    'DA0050VW': ['C3', 'C4']
+}
 
 # path = osp.join('C:', osp.sep, 'Users', 'FBE', 'Dropbox', 'Data', 'Spike')
 path = osp.join(osp.sep, 'Users', 'shirleywei', 'Dropbox', 'Data', 'Spike')
@@ -39,7 +72,7 @@ filesubs = [f[:-4] for f in files]
 notch_freq = 50  # for eeg data from China
 bp_freq = [0.5, None]
 org_channels = ['FP1', 'FP2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2', 'F7', 'F8', 'T3', 'T4', 'T5', 'T6', 'FZ',
-                'CZ', 'PZ']
+                'CZ', 'PZ']  # same as mono_channels in GitCodes
 mono_channels = ['FP1', 'F3', 'C3', 'P3', 'F7', 'T3', 'T5', 'O1', 'FZ', 'CZ', 'PZ', 'FP2', 'F4', 'C4', 'P4', 'F8', 'T4',
                  'T6', 'O2']
 bipolar_channels = ['FP1-F7', 'F7-T3', 'T3-T5', 'T5-O1', 'FP2-F8', 'F8-T4', 'T4-T6', 'T6-O2', 'FP1-F3', 'F3-C3',
@@ -50,7 +83,7 @@ step = 1
 batch_size = 256
 
 
-def read_m00_file(path):
+def read_m00_file(path, filesub, bad_channels=False):
     # read data
     f = open(path, "r")
     txt = f.readlines()[0]
@@ -61,6 +94,16 @@ def read_m00_file(path):
     seg = data[:, :19].transpose()
     data = np.where(np.isnan(seg), 0, seg)
     data = - data
+
+    if bad_channels:
+        # Add bad channels
+        if filesub in bad_channel_dict.keys():
+            print("True")
+            bad_chnames = bad_channel_dict[filesub]
+            bad_channel_ids = [org_channels.index(bc) for bc in bad_chnames]
+            print("bad_channel_ids: ", bad_channel_ids)
+            data[bad_channel_ids, :] = 0
+            print(data[bad_channel_ids, :])
 
     # switch rows
     switch_idx = [org_channels.index(mono_channels[i]) for i in range(19)]
@@ -147,9 +190,16 @@ for f in bckgfilesub:
 
 # I/O directories
 targetDir = "Output/"
-dataDir = "/Users/shirleywei/Dropbox/Projects/NestedDeepLearningModel/Dataset/"
-if not os.path.exists(dataDir + SSDname):
-    os.makedirs(dataDir + SSDname)
+dataDir = "/Users/shirleywei/Dropbox/Projects/NestedDeepLearningModel/Dataset/" + SSDname
+saveDir = "/Users/shirleywei/Dropbox/Projects/NestedDeepLearningModel/Results/AIcode/testBTHbySpikeNet/" + SSDname
+if bad_channels:
+    saveDir = saveDir + "_bad_channels"
+    dataDir = dataDir + "_bad_channels"
+
+# if not os.path.exists(dataDir + SSDname):
+#     os.makedirs(dataDir + SSDname)
+os.makedirs(saveDir, exist_ok=True)
+os.makedirs(dataDir, exist_ok=True)
 
 # load model
 with open("model/spikenet1.o_structure.txt", "r") as ff:
@@ -182,7 +232,7 @@ for seed in seed_range:
 
         original_stdout = sys.stdout
 
-        with open(dataDir + SSDname + '/seed' + str(seed) + '.txt', 'w') as f:
+        with open(dataDir + '/seed' + str(seed) + '.txt', 'w') as f:
             sys.stdout = f
 
             # =============WRITE START=================================
@@ -190,7 +240,7 @@ for seed in seed_range:
                 filename = osp.join(path, 'newEEGdata', filesub + '.m00')
                 if osp.exists(filename):
                     # read X
-                    eeg = read_m00_file(filename)
+                    eeg = read_m00_file(filename, filesub, bad_channels)
                     eeg = preprocess_eeg(eeg)
 
                     # ---------------------------------------
@@ -317,12 +367,14 @@ for seed in seed_range:
         y = np.array(y)
 
         # export
-        output_path = dataDir + SSDname + "/seed" + str(seed)
+        # output_path = dataDir + SSDname + "/seed" + str(seed)
+        output_path = saveDir + "/data_seed" + str(seed)
         np.savez(output_path, X=X, y=y)
 
     else:
 
-        output_path = dataDir + SSDname + "/seed" + str(seed) + '.npz'
+        # output_path = dataDir + SSDname + "/seed" + str(seed) + '.npz'
+        output_path = saveDir + "/data_seed" + str(seed) + '.npz'
         Y = np.load(output_path)
         y = Y['y']
         X = Y['X']
@@ -338,7 +390,8 @@ for seed in seed_range:
 
     yp = np.array(yp)
 
-    savepath = dataDir + SSDname + '/output_seed' + str(seed) + '.npz'
+    # savepath = dataDir + SSDname + '/output_seed' + str(seed) + '.npz'
+    savepath = saveDir + '/output_seed' + str(seed) + '.npz'
     np.savez(savepath, outputm=yp, targetm=y)
 
     thres = 0.5
@@ -367,7 +420,7 @@ for seed in seed_range:
 
     if draw:
         print("Begin to plot:")
-        savepdfpath = osp.join(dataDir + SSDname + "/seed" + str(seed) + '.pdf')
+        savepdfpath = osp.join(dataDir + "/seed" + str(seed) + '.pdf')
         pdf = backend_pdf.PdfPages(savepdfpath)
         for row in range(X.shape[0]):
             subeeg = X[row, :, :19].transpose()
@@ -401,7 +454,9 @@ for seed in seed_range:
 
 ar = np.array([index_col, REC, PREC, SPEC, F1, PRAUC, AUC]).transpose()
 print(ar)
-np.savetxt(targetDir + "testTable_" + SSDname + '_' + str(thres) + ".csv", ar, fmt='%.4f', delimiter=",",
+# np.savetxt(targetDir + "testTable_" + SSDname + '_' + str(thres) + ".csv", ar, fmt='%.4f', delimiter=",",
+#            header="seed,recall,prec,spec,f1,prauc,auc")
+np.savetxt(saveDir + "/threshold_" + str(thres) + ".csv", ar, fmt='%.4f', delimiter=",",
            header="seed,recall,prec,spec,f1,prauc,auc")
 
 # # export
