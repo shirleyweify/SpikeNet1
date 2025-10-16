@@ -1,0 +1,19 @@
+**/.DS_Store
+
+# Pycharm specific files
+.idea/
+*.iml
+
+# Python compiled files and cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment and package folders
+venv/
+.venv/
+
+# Build and distribution folders
+build/
+dist/
